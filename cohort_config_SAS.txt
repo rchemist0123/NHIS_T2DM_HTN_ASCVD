@@ -1,0 +1,477 @@
+options dlcreatedir;
+libname raw '/userdata13/room129/data_source';
+libname dm '/userdata13/room129/working/DM';
+
+data dm.t2dm_income; set raw.nhis_heals_jk;
+keep ctrb_pt_type_cd;
+proc freq; table ctrb_pt_type_cd; run;
+
+
+/* 자격 */
+data dm.t2dm_jk; set raw.nhis_heals_jk;
+keep stnd_y person_id sex age dth_mdy dth_yn;
+run;
+
+/*진료*/
+data dm.td2m_m20_t1; set raw.nhis_heals_gy20_t1;
+if substr(main_sick,1,3) in ('E11','E12','E13','E14');
+keep person_id key_seq recu_fr_dt main_sick sub_sick;
+proc freq; table main_sick; run;
+
+
+/*Anti-diabetes medications*/
+/* insulin / sulfonylureas / metformin / meglitinides / thiazolidainediones*/
+/* dipeptidyl peptidase-4 inhibitors / alpha -glucoseidase inhibitors*/
+data dm.t2dm_med; set raw.nhis_heals_gy30_t3;
+if gnl_nm_cd in ( 
+'100601ATB',  '100602ATB', '249001ATB', '249002ATB', '500801ATB', '507000ATB', '507100ATB',
+ '519600ATB', '501101ATB', '501102ATB', '501103ATB', '502300ATB', '502300ATR', '502900ATB',
+ '513700ATB', '513700ATR', '524700ATR', '518500ATR', '518600ATR', '613301ATB', '613302ATB',
+ '624202ATB', '624203ATB', '630500ATB', '630600ATB', '635600ATB', '635700ATB', '675500ATB',
+ '165602ATB', '165603ATR', '165604ATR', '497200ATB', '165402ATB', '443400ATB', '443500ATB',
+ '165801ATB', '191501ATB', '191502ATB', '191502ATR', '191503ATB', '191504ATB', '191504ATR',
+ '191505ATR', '443400ATB', '443500ATB', '474200ATB', '474300ATB', '474300ATR', '498600ATB',
+ '497200ATB', '498100ATB', '502300ATB', '502300ATR', '502900ATB', '513700ATB', '513700ATR',
+ '524700ATR', '507000ATB', '507100ATB', '519600ATB', '518500ATR', '518600ATR', '518800ATB',
+ '520500ATB', '520600ATB', '520700ATB', '523800ATR', '632000ATR', '645000ATR', '654100ATR',
+ '635600ATB', '635700ATB', '675500ATB', '639800ATR', '641400ATR', '641800ATR', '641900ATR',
+ '642000ATR', '648400ATB', '648500ATB', '648600ATB', '649000ATB', '649100ATB', '649200ATB',
+ '649300ATB', '649400ATB', '649500ATB', '649900ATR', '650000ATR', '650100ATR', '653800ATR',
+ '653900ATR', '654000ATR', '655700ATR', '671800ATR', '673800ATR', '671900ATR', '672000ATR',
+ '672100ATR',  '672500ATR', '672600ATR', '672700ATR', '672800ATR', '672900ATR', '683300ATR',
+ '683400ATR', '379501ATB', '379502ATB', '379503ATB', '430201ATB', '430202ATB', '430203ATB',
+ '636101ATB', '628201ATB', '628202ATB', '649000ATB', '649100ATB', '649200ATB', '649300ATB',
+ '649400ATB', '649500ATB',  '674301ATB', '674302ATB'
+);
+keep div_cd  gnl_nm_cd key_seq recu_fr_dt;
+run;
+
+/*약품 데이터에서 당뇨환자 id 만 찾아내기*/
+data dm.t2dm_drug_temp; set raw.nhis_heals_gy20_t1;
+where substr(main_sick,1,3) in ('E11','E12','E13','E14');
+keep person_id main_sick key_seq recu_fr_dt;
+run;
+
+
+/*당뇨병 환자들의 의약품 이력 테이블*/
+proc sql;
+create table dm.t2dm_drug as
+select a.person_id, a.recu_fr_dt as drug_date, a.main_sick
+from dm.t2dm_drug_temp as as
+inner join dm.t2dm_med as b
+on a.key_seq = b.key_seq and a.recu_fr_dt = b.recu_fr_dt
+order by person_id, a.recu_fr_dt;
+quit;
+
+PROC SQL;
+CREATE TABLE DM.t2dm_id AS
+select A.person_id, a.recu_fr_dt as dates_first_diag,
+b.drug_date as dates_first_drug
+FROM DM.t2dm_m20_t1 A
+INNER JOIN DM.t2dm_DRUG B
+	ON A.PERSON_ID = B.PERSON_ID
+group by a.person_id
+having dates_first_diag= min(dates_first_diag) and dates_first_drug=min(dates_first_drug);
+quit;
+
+
+
+proc freq data=dm.t2dm_drug;
+tables recu_fr_dt;
+run;
+
+ 
+/*검진 gj: 당뇨관련 데이터 확인하기*/
+/*일반 건강검진: nhis_heals_gj*/
+/* 공복혈압 측정 blds >= 126*/
+
+data dm.t2dm_gj; set raw.nhis_heals_gj;
+if blds >= 126 then t2dm_yn=1; else t2dm_yn = 0;
+keep hchk_year person_id hme_dt bmi waist weight blds t2dm_yn 
+TOT_CHOLE TRIGLYCERIDE HDL_CHOLE LDL_CHOLE
+	bp_high bp_lwst tot_chole hmg gly_cd olig_occu_cd olig_ph olig_prote_cd
+	sgot_ast sgpt_alt gamma_gtp
+hchk_pmh_cd1 hchk_pmh_cd2 hchk_pmh_cd3 
+	SMK_STAT_TYPE_RSPS_CD SMK_TERM_RSPS_CD DSQTY_RSPS_CD
+DRNK_HABIT_RSPS_CD TM1_DRKQTY_RSPS_CD EXERCI_FREQ_RSPS_CD;
+run;
+
+/*고지혈증 환자 찾기*/
+data dm.lpdm_diag; set raw.nhis_heals_gy20_t3;
+if substr(main_sick,1,3) in ('E78');
+keep person_id recu_fr_dt key_seq;
+run;
+
+/*고지혈증 약물*/
+
+proc sql;
+create table dm.lpdm_med as
+select div_cd,  gnl_nm_cd, key_seq, recu_fr_d
+from dm.nhis_heals_gy30_t3 
+where gnl_nm_cd in ('111501ATB', '111502ATB', '111503ATB', '111504ATB', '502201ATB', '502202ATB', '502203ATB', '502204ATB', '633800ATB', 
+'633900ATB', '634600ATB', '634800ATB', '694000ACS', '472300ATB', '472400ATB', 
+'472500ATB', '518900ATB', '524000ATB', '524100ATB', '527000ATB', '527100ATB', 
+'614500ATB', '688100ATB', '688200ATB', '688300ATB', '688400ATB', '688500ATB', 
+'690400ATB', '690500ATB', '690600ATB', '690700ATB', '671800ATR', '673800ATR', 
+'671900ATR', '672000ATR', '672100ATR', '470901ATB', '470902ATB', '470903ATB', 
+'679300ACH', '634900ATB', '635000ATB', '635100ATB', '635200ATB', '185801ATB', 
+'227801ATB', '227801ATR', '227802ATB', '227806ATB', '471000ATB', '471100ATB', 
+'507800ATB', '631400ATB', '631500ATB', '216601ATB', '216602ATB', '216603ATB', 
+'216604ATB', '519300ACH', '162401ACH', '162402ACH', '162403ATR', '454001ATB', 
+'454002ATB', '454003ATB', '640700ATB', '640800ATB', '640900ATB', '663400ACS', 
+'525000ATB', '525100ATB', '525200ATB', '525300ATB', '629700ATB', '629800ATB', 
+'526300ATB', '526400ATB', '526500ATB', '526900ATB', '644100ATB', '644200ATB', 
+'653200ATB', '629900ATB', '630000ATB', '630100ATB', '630200ATB', '631600ATB', 
+'631700ATB', '654700ATB', '654800ATB', '654900ATB', '655000ATB', '661800ATB', 
+'661900ATB', '662000ATB', '662100ATB', '673700ATB', '663900ATB', '664000ATB', 
+'664100ATB', '664200ATB', '664300ATB', '664400ATB', '671200ATB', '671300ATB', 
+'671400ATB', '671500ATB', '671600ATB', '671700ATB', '677000ATB', '677100ATB', 
+'673900ATB', '674000ATB', '674100ATB', '678600ATB', '677300ATB', '677400ATB', 
+'677500ATB', '677600ATB', '686800ATB', '686900ATB', '679500ATB', '679600ATB', 
+'679700ATB', '680300ATB', '691400ATB', '691500ATB', '683000ATB', '683100ATB', 
+'683200ATB', '691200ATB', '693000ATB', '684300ATB', '684400ATB', '684500ATB', 
+'684600ATB', '684700ATB', '692000ATB', '692100ATB', '692200ATB', '692300ATB', 
+'692400ATB', '692500ATB', '664600ATB', '664700ATB', '664800ATB', '672500ATR', 
+'672600ATR', '672700ATR', '672800ATR', '672900ATR', '683300ATR', '683400ATR', 
+'462201ATB', '471000ATB', '471100ATB', '507800ATB', '633800ATB', '633900ATB', 
+'634600ATB', '634800ATB', '640700ATB', '640800ATB', '640900ATB', '692000ATB', 
+'692100ATB', '692200ATB', '692300ATB', '692400ATB', '692500ATB', '157702ACR', 
+'194901ACH', '194902ACH', '194930ACH', '194930ATB', '519300ACH', '631400ATB', 
+'631500ATB', '642301ACR', '642301ATR', '679300ACH', '165001ACH', '117101ATB', 
+'117102ATR', '520301ACH', '520302ATE', '642301ACR', '642301ATR', '102201ACH', 
+'663400ACS', '679401ACS', '679402ACS', '694000ACS', '132301APD' 
+);
+quit;
+
+data dm.lpdm_med; set raw.nhis_heals_gy30_t3;
+if gnl_nm_cd in (
+	'111501ATB', '111502ATB', '111503ATB', '111504ATB', '502201ATB', '502202ATB', '502203ATB', '502204ATB', '633800ATB', 
+'633900ATB', '634600ATB', '634800ATB', '694000ACS', '472300ATB', '472400ATB', 
+'472500ATB', '518900ATB', '524000ATB', '524100ATB', '527000ATB', '527100ATB', 
+'614500ATB', '688100ATB', '688200ATB', '688300ATB', '688400ATB', '688500ATB', 
+'690400ATB', '690500ATB', '690600ATB', '690700ATB', '671800ATR', '673800ATR', 
+'671900ATR', '672000ATR', '672100ATR', '470901ATB', '470902ATB', '470903ATB', 
+'679300ACH', '634900ATB', '635000ATB', '635100ATB', '635200ATB', '185801ATB', 
+'227801ATB', '227801ATR', '227802ATB', '227806ATB', '471000ATB', '471100ATB', 
+'507800ATB', '631400ATB', '631500ATB', '216601ATB', '216602ATB', '216603ATB', 
+'216604ATB', '519300ACH', '162401ACH', '162402ACH', '162403ATR', '454001ATB', 
+'454002ATB', '454003ATB', '640700ATB', '640800ATB', '640900ATB', '663400ACS', 
+'525000ATB', '525100ATB', '525200ATB', '525300ATB', '629700ATB', '629800ATB', 
+'526300ATB', '526400ATB', '526500ATB', '526900ATB', '644100ATB', '644200ATB', 
+'653200ATB', '629900ATB', '630000ATB', '630100ATB', '630200ATB', '631600ATB', 
+'631700ATB', '654700ATB', '654800ATB', '654900ATB', '655000ATB', '661800ATB', 
+'661900ATB', '662000ATB', '662100ATB', '673700ATB', '663900ATB', '664000ATB', 
+'664100ATB', '664200ATB', '664300ATB', '664400ATB', '671200ATB', '671300ATB', 
+'671400ATB', '671500ATB', '671600ATB', '671700ATB', '677000ATB', '677100ATB', 
+'673900ATB', '674000ATB', '674100ATB', '678600ATB', '677300ATB', '677400ATB', 
+'677500ATB', '677600ATB', '686800ATB', '686900ATB', '679500ATB', '679600ATB', 
+'679700ATB', '680300ATB', '691400ATB', '691500ATB', '683000ATB', '683100ATB', 
+'683200ATB', '691200ATB', '693000ATB', '684300ATB', '684400ATB', '684500ATB', 
+'684600ATB', '684700ATB', '692000ATB', '692100ATB', '692200ATB', '692300ATB', 
+'692400ATB', '692500ATB', '664600ATB', '664700ATB', '664800ATB', '672500ATR', 
+'672600ATR', '672700ATR', '672800ATR', '672900ATR', '683300ATR', '683400ATR', 
+'462201ATB', '471000ATB', '471100ATB', '507800ATB', '633800ATB', '633900ATB', 
+'634600ATB', '634800ATB', '640700ATB', '640800ATB', '640900ATB', '692000ATB', 
+'692100ATB', '692200ATB', '692300ATB', '692400ATB', '692500ATB', '157702ACR', 
+'194901ACH', '194902ACH', '194930ACH', '194930ATB', '519300ACH', '631400ATB', 
+'631500ATB', '642301ACR', '642301ATR', '679300ACH', '165001ACH', '117101ATB', 
+'117102ATR', '520301ACH', '520302ATE', '642301ACR', '642301ATR', '102201ACH', 
+'663400ACS', '679401ACS', '679402ACS', '694000ACS', '132301APD' 
+);
+keep div_cd  gnl_nm_cd key_seq recu_fr_dt;
+run;
+
+proc sql;
+create table dm.lpdm_drug as
+select a.person_id, a.recu_fr_dt as drug_date
+from dm.lpdm_diag as a
+inner join dm.lpdm_med as b
+on a.key_seq = b.key_seq
+order by a.person_id, a.recu_fr_dt;
+quit;
+
+proc sort data=dm.lpdm_diag
+out=dm.lpdm_diag;
+by person_id recu_fr_dt;
+run;
+
+proc sort data=dm.lpdm_drug
+out=dm.lpdm_drug;
+by person_id drug_date;
+run;
+
+PROC SQL;
+CREATE TABLE DM.LPDM_ID AS
+select A.person_id, a.recu_fr_dt as dates_first_diag,
+b.drug_date as dates_first_drug
+FROM DM.lpdm_DIAG A
+INNER JOIN DM.lpdm_DRUG B
+	ON A.PERSON_ID = B.PERSON_ID
+group by a.person_id
+having dates_first_diag= min(dates_first_diag) and dates_first_drug=min(dates_first_drug);
+quit;
+
+proc sql;
+create table dm.lpdm_id as
+select a.*, b.div_cd, b.gnl_nm_cd
+from dm.lpdm_diag as a
+inner join dm.lpdm_med as b
+on a.key_seq = b.key_seq and a.recu_fr_dt = b.recu_fr_dt;
+quit;
+
+
+
+/*고혈압*/
+data dm.hptn_diag; set raw.nhis_heals_gy20_t1;
+if substr(main_sick,1,3) in ('I10','I11','I12','I13','I15');
+keep person_id key_seq recu_fr_dt main_sick sub_sick;
+proc freq; table main_sick; run;
+
+data dm.hptn_drug_temp; set raw.nhis_heals_gy20_t3;
+where substr(main_sick,1,3) in ('I10','I11','I12','I13','I15');
+keep person_id main_sick key_seq recu_fr_dt;
+run;
+
+
+data dm.hptn_med; set raw.nhis_heals_gy30_t3;
+if gnl_nm_cd in (
+	'170801ATB', '262500ATB', '378900ATB', '486900ATB', '262700ATB', '356400ATB', '442600ATB', '385700ATB', '385800ATB', '423700ATB'
+'443300ATB', '502600ATB', '460500ATB', '469800ATB', '469900ATB', '470000ATB', '513600ATB', '519700ATB', '519800ATB', '520000ATB'
+'522000ATB', '526800ATB', '663500ATB', '663600ATB', '663700ATB', '663800ATB', '174403ATB', '174401ATR', '556200ATB', '163801ATB'
+'163830BIJ', '242001ATB', '242002ATB', '242003ATB', '106901ATB', '122901ATB', '122902ATB', '122903ATB', '151601ATB', '151603ATB'
+'184501ATB', '211301ATB', '211302ATB', '501601ATB', '501602ATB', '556200ATB', '222401ATB', '222402ATB', '222404ATB', '447100ATB'
+'447200ATB', '247101ATB', '247102ATB', '247103ATB', '247104ATB', '356400ATB', '442600ATB', '492800ATB', '492900ATB', '495800ATB'
+'522200ATB', '522300ATB', '522400ATB', '522600ATB', '522700ATB', '522800ATB', '522900ATB', '523000ATB', '523100ATB', '523200ATB'
+'523300ATB', '523400ATB', '525000ATB', '525100ATB', '525200ATB', '525300ATB', '629700ATB', '629800ATB', '634900ATB', '635000ATB'
+'635100ATB', '635200ATB', '651401ATB', '651402ATB', '651403ATB', '679500ATB', '679600ATB', '679700ATB', '680300ATB', '691400ATB'
+'691500ATB', '690400ATB', '690500ATB', '690600ATB', '690700ATB', '185701ATB', '185702ATB', '185703ATB', '262500ATB', '378900ATB'
+'486900ATB', '502700ATB', '503000ATB', '513900ATB', '637400ATB', '637500ATB', '637600ATB', '662800ATB', '662900ATB', '663000ATB'
+'663900ATB', '664000ATB', '664100ATB', '664200ATB', '664300ATB', '664400ATB', '692000ATB', '692100ATB', '692200ATB', '692300ATB'
+'692400ATB', '692500ATB', '515201ATB', '515202ATB', '515203ATB', '522000ATB', '526800ATB', '651900ATB', '652000ATB', '652100ATB'
+'652700ATB', '654700ATB', '654800ATB', '654900ATB', '655000ATB', '684300ATB', '684400ATB', '684500ATB', '684600ATB', '684700ATB'
+'688100ATB', '688200ATB', '688300ATB', '688400ATB', '688500ATB', '378801ATB', '378802ATB', '378803ATB', '443200ATB', '443300ATB'
+'502600ATB', '511500ATB', '511600ATB', '511700ATB', '623100ATB', '521200ATB', '521300ATB', '521400ATB', '644800ATB', '663500ATB'
+'663600ATB', '663700ATB', '663800ATB', '682700ATB', '682800ATB', '682900ATB', '629900ATB', '630000ATB', '630100ATB', '630200ATB'
+'631600ATB', '631700ATB', '671200ATB', '671300ATB', '671400ATB', '671500ATB', '671600ATB', '671700ATB', '677000ATB', '677100ATB'
+'177301ATB', '177303ATB', '385700ATB', '385800ATB', '524000ATB', '524100ATB', '527000ATB', '527100ATB', '468501ATB', '468502ATB'
+'468503ATB', '500500ATB', '582200ATB', '582400ATB', '513600ATB', '519700ATB', '519800ATB', '520000ATB', '547600ATB', '547700ATB'
+'547800ATB', '547900ATB', '548000ATB', '631300ATB', '629400ATB', '629500ATB', '629600ATB', '632800ATB', '632900ATB', '633000ATB'
+'526300ATB', '526400ATB', '526500ATB', '526900ATB', '644100ATB', '644200ATB', '653200ATB', '677300ATB', '677400ATB', '677500ATB'
+'677600ATB', '686800ATB', '686900ATB', '662401ATB', '662402ATB', '662403ATB', '673500ATB', '673600ATB', '117903ATB', '117904ATB'
+'469800ATB', '469900ATB', '470000ATB', '117901ATB', '117902ATB', '125001ATB', '125002ATB', '125003ATB', '125004ACR', '125005ATB'
+'125006ACR', '125007ACR', '125007ATR', '125008ACR', '125008ATR', '662201ATB', '489501ATB', '489502ATB', '489503ATB', '683000ATB'
+'683100ATB', '683200ATB', '691200ATB', '693000ATB', '219901ATB', '219904ATB', '111402ATB', '111403ATB', '262100ATB', '483101ATB'
+'483102ATB', '201405ATR', '201409ATR', '528201ATR', '528202ATR', '247603ATR', '247605ATR', '247606ATB', '247607ATB', '247630BIJ'
+'145703ACR', '145706ATB', '145707ACR', '145707ATR', '145704BIJ', '107601ATB', '107602ATB', '107603ATB', '459801ACH', '459801ATB'
+'459802ACH', '459901ATB', '459902ATB', '464601ATB', '470801ATB', '470802ATB', '476201ATB', '479701ATB', '483201ATB', '483202ATB'
+'486501ATB', '486502ATB', '486503ATB', '492800ATB', '492900ATB', '495800ATB', '500500ATB', '582200ATB', '582400ATB', '502700ATB'
+'503000ATB', '513900ATB', '511500ATB', '511600ATB', '511700ATB', '623100ATB', '519700ATB', '519800ATB', '520000ATB', '521200ATB'
+'521300ATB', '521400ATB', '644800ATB', '522600ATB', '522700ATB', '522800ATB', '522900ATB', '523000ATB', '523100ATB', '523200ATB'
+'523300ATB', '523400ATB', '547600ATB', '547700ATB', '547800ATB', '547900ATB', '548000ATB', '631300ATB', '629400ATB', '629500ATB'
+'629600ATB', '632800ATB', '632900ATB', '633000ATB', '637400ATB', '637500ATB', '637600ATB', '651900ATB', '652000ATB', '652100ATB'
+'652700ATB', '652900ATB', '653000ATB', '653100ATB', '662800ATB', '662900ATB', '663000ATB', '663500ATB', '663600ATB', '663700ATB'
+'663800ATB', '682700ATB', '682800ATB', '682900ATB', '472300ATB', '472400ATB', '472500ATB', '518900ATB', '614500ATB', '663900ATB'
+'664000ATB', '664100ATB', '664200ATB', '664300ATB', '664400ATB', '671200ATB', '671300ATB', '671400ATB', '671500ATB', '671600ATB'
+'671700ATB', '677000ATB', '677100ATB', '673900ATB', '674000ATB', '674100ATB', '678600ATB', '677300ATB', '677400ATB', '677500ATB'
+'677600ATB', '686800ATB', '686900ATB', '679500ATB', '679600ATB', '679700ATB', '680300ATB', '691400ATB', '691500ATB', '684300ATB'
+'684400ATB', '684500ATB', '684600ATB', '684700ATB', '690400ATB', '690500ATB', '690600ATB', '690700ATB', '692000ATB', '692100ATB'
+'692200ATB', '692300ATB', '692400ATB', '692500ATB', '201003ACR', '201030BIJ', '201031BIJ', '201033BIJ', '157501ATR', '157503ATR'
+'262400ATR', '447100ATB', '447200ATB');
+keep div_cd  gnl_nm_cd key_seq recu_fr_dt;
+run;
+
+
+proc sql;
+create table dm.hptn_drug as
+select a.person_id, a.recu_fr_dt as drug_date
+from dm.hptn_drug_temp as a
+inner join dm.hptn_med as b
+on a.key_seq = b.key_seq and a.recu_fr_dt = b.recu_fr_dt
+order by person_id, a.recu_fr_dt;
+quit;
+
+proc sort data=dm.hptn_diag
+out=dm.hptn_diag;
+by person_id recu_fr_dt;
+run;
+
+proc sort data=dm.hptn_drug
+out=dm.hptn_drug;
+by person_id drug_date;
+run;
+
+
+
+PROC SQL;
+CREATE TABLE DM.HPTN_ID AS
+select A.person_id, a.recu_fr_dt as dates_first_diag,
+b.drug_date as dates_first_drug
+FROM DM.HPTN_DIAG A
+INNER JOIN DM.HPTN_DRUG B
+	ON A.PERSON_ID = B.PERSON_ID
+group by a.person_id
+having dates_first_diag= min(dates_first_diag) and dates_first_drug=min(dates_first_drug);
+quit;
+
+/*자격 검진 합치기*/
+
+PROC SQL;
+CREATE TABLE DM.T2DM_JKGJ AS
+SELECT A.STND_Y, A.PERSON_ID, A.SEX, A.AGE, A.ctrb_pt_type_cd,
+B.HME_DT, B.BMI, B.BP_HIGH, B.BP_LWST, B.BLDS,
+B.TOT_CHOLE, B.HMG, B.OLIG_PROTE_CD, 
+B.FMLY_HPRTS_PATIEN_YN, B.FMLY_DIABML_PATIEN_YN, B.FMLY_HDISE_PATIEN_YN,
+WLK30_WEK_FREQ_ID, MOV20_WEK_FREQ_ID,MOV30_WEK_FREQ_ID, 
+SMK_STAT_TYPE_RSPS_CD, DSQTY_RSPS_CD,CUR_DSQTY_RSPS_CD, 
+DRNK_HABIT_RSPS_CD,TM1_DRKQTY_RSPS_CD,DRNK_HABIT_RSPS_CD 
+FROM RAW.NHIS_HEALS_JK AS A
+INNER JOIN RAW.nhis_heals_gj AS B
+	ON A.PERSON_ID = B.PERSON_ID AND A.STND_Y = B.HCHK_YEAR;
+QUIT;
+
+
+/*검진 데이터로 인원 뽑아내기*/
+proc sql;
+select gj.person_id, gj.hchk_year, jk.age, jk.sex
+from raw.nhis_heals_gj as gj
+inner join raw.nhis_heals_jk as jk
+	on gj.person_id = jk.person_id and gj.hchk_year = jk.stnd_y;
+quit;
+
+
+/*ASCVD*/
+proc sql;
+create table DM.ascvd_diags as
+select person_id, key_seq, recu_fr_dt as dates_first_diag
+from raw.nhis_heals_gy20_t1
+where substr(main_sick,1,3) in 
+('I20', 'I21','I22', 'I23', 'I24','I25', 'I11','I13','I42','I50',
+'I60', 'I61', 'I62', 'I63','I64','I69') or
+substr(main_sick,1,4) in ('I110','I130','I132','I255') or
+substr(sub_sick,1,3) in ('I20', 'I21','I22', 'I23', 'I24','I25', 'I11','I13','I42','I50','I60', 'I61', 'I62', 'I63','I64','I69') 
+group by person_id
+union
+select person_id, key_seq, recu_fr_dt as dates_first_diag
+from raw1619.nhis_heals_gy20_1619_t1
+where substr(main_sick,1,3) in 
+('I20', 'I21','I22', 'I23', 'I24','I25', 'I11','I13','I42','I50',
+'I60', 'I61', 'I62', 'I63','I64','I69') or
+substr(main_sick,1,4) in ('I110','I130','I132','I255') or
+substr(sub_sick,1,3) in ('I20', 'I21','I22', 'I23', 'I24','I25', 'I11','I13','I42','I50','I60', 'I61', 'I62', 'I63','I64','I69') 
+group by person_id;
+quit;
+
+
+proc sql;
+select * from raw.nhis_heals_gy20_t1;
+quit;
+
+data dm.ascvd_diag; set raw.nhis_heals_gy20_t1;
+if substr(main_sick,1,3) in ('I20', 'I21','I' 'I23', 'I63');
+keep person_id key_seq recu_fr_dt main_sick sub_sick;
+
+/*췌장암*/
+proc sql;
+select person_id, key_seq, recu_fr_dt
+from raw.nhis_heals_gy20_t1
+where substr(main_sick,1,3) = 'C25' or substr(sub_sick,1,3) = 'C25';
+quit;
+
+proc sql;
+create table dm.t2dm_deserve as
+select d.person_id, d.key_seq, d.recu_fr_dt, m.recu_fr_dt 
+from raw.nhis_heals_gy20_t1 as d
+left join raw.nhis_heals_gy30_t1 as m on d.recu_fr_dt = m.recu_fr_dt;
+quit;
+
+proc sql;
+create table dm.t2dm_diag_check as
+select a.person_id,  min(a.recu_fr_dt),max(a.recu_fr_dt)
+from raw.nhis_heals_gy20_t1 as a
+group by a.person_id;
+quit;
+
+proc sql;
+create table dm.t2dm_drug_check as
+select a.person_id,  min(a.recu_fr_dt),max(a.recu_fr_dt)
+from raw.nhis_heals_gy20_t3 as a
+group by a.person_id;
+quit;
+
+
+/*CCI*/
+
+proc sql;
+create table dm.cci as 
+select person_id,
+	case when substr(main_sick,1,3) in ('B20', 'B22')  then 1
+			when substr(sub_sick,1,3) in ('B20', 'B22') then 1 else 0 end as AIDS,
+
+case when substr(main_sick,1,3) = 'I69' then 1
+ when substr(sub_sick,1,3) = 'I69' then 1 else 0 end as CEREBROVASCULAR,
+
+	case when substr(main_sick,1,3) in ('J41', 'J42','J43','J44','J45','J46', 'J47',
+														'J60','J61','J62','J63','J64','J65','J66') then 1
+	 		when substr(sub_sick,1,3) in ('J41', 'J42','J43','J44','J45','J46', 'J47',
+														'J60','J61','J62','J63','J64','J65','J66') then 1 else 0 end as chronic_pulmonary_disease,
+
+	case when substr(main_sick,1,3) in ('F00','F01','F02') then 1
+ 			when substr(sub_sick,1,3) in ('F00','F01','F02') then 1 else 0 end as dementia,
+
+	case when substr(main_sick,1,4) in ('E101','E109','E111','E119','E131','E139','E141','E149')  then 1
+		 	when substr(sub_sick,1,4) in ('E101','E109','E111','E119','E131','E139','E141','E149') then 1 else 0 end as diabetes_no_complication,
+
+	case when substr(main_sick,1,4) in ('E102','E103', 'E104','E112','E113' 'E114','E132','E133','E134', 'E142','E143','E144') then 1  
+ 			when substr(sub_sick,1,4) in ('E102','E103', 'E104','E112','E113' 'E114','E132','E133','E134', 'E142','E143','E144') then 1 else 0 end as diabetes_complication,
+
+case when substr(main_sick,1,3) in ('G81') then 1 
+		 when substr(main_sick,1,4) in ('g820','g821','g822') then 1
+		 when substr(sub_sick,1,3) in ('G81') then 1 
+		when substr(sub_sick,1,4) in ('g820','g821','g822') then 1 else 0 end as hemiplegia,
+
+case when substr(main_sick,1,4) in ('K703','K717','K743','K744','K745','K746') then 1 
+	when substr(main_sick,1,3) = 'K73' then 1
+	 when substr(sub_sick,1,4) in ('K703','K717','K743','K744','K745','K746') then 1
+	 when substr(sub_sick,1,3) = 'K73'  then 1 else 0 end as mild_liver_disease,
+
+case when substr(main_sick ,1,4) in ('k721','k729','k766','k767') then 1 
+	 when substr(sub_sick ,1,4) in ('k721','k729','k766','k767') then 1 else 0 end as mod_liver_disease,
+
+case when substr(main_sick,1,3) in ('c00','c01','c02','c03','c04','c05','c06','c07','c08','c09','c10','c11','c12','c13','c14','c15','c16','c17','c18','c19','c20','c21','c22','c23','c24','c25','c26',
+													'c30','c31','c32','c33','c34','c37','c38','c39','c40','c41','c45','c46','c47','c48','c49','c50','c51','c52','c53','c54','c55','c56','c57','c58',
+													'c60','c61','c62','c63','c64','c65','c66','c67','c68','c69','c70','c71','c72','c73','c74','c75','c76','c81','c82','c83','c84','c85','c91','c92','c93','c95','c96') then 1 
+		when substr(main_sick,1,4) in ('c883','c887','c889','c900','c901','c940','c941','c942','c943','c945','c947') then 1 
+		 when substr(sub_sick,1,3) in ('c00','c01','c02','c03','c04','c05','c06','c07','c08','c09','c10','c11','c12','c13','c14','c15','c16','c17','c18','c19','c20','c21','c22','c23','c24','c25','c26',
+															'c30','c31','c32','c33','c34','c37','c38','c39','c40','c41','c45','c46','c47','c48','c49','c50','c51','c52','c53','c54','c55','c56','c57','c58',
+															'c60','c61','c62','c63','c64','c65','c66','c67','c68','c69','c70','c71','c72','c73','c74','c75','c76','c81','c82','c83','c84','c85','c91','c92','c93','c95','c96') then 1
+		 when substr(sub_sick,1,4) in ('c883','c887','c889','c900','c901','c940','c941','c942','c943','c945','c947') then 1 else on end as malignancy,
+
+	case when substr(main_sick,1,3) in ('c77','c78','c79') then 1
+		when substr(sub_sick,1,3) in ('c77','c78','c79') then 1 else 0 end as metastatic_solid_tumor,
+
+	case when substr(main_sick,1,4) = 'I252' then 1 
+		when substr(sub_sick,1,4) = 'I252' then 1 else 0 end as myocardial_infarction,
+
+
+	case when substr(main_sick ,1,3) = 'I71' then 1 
+		 when substr(main_sick,1,4) in ('i739','z958','z959') then 1  
+		 when substr(sub_sick ,1,3) = 'I71' then 1
+		 when substr(main_sick,1,4) in ('i739','z958','z959') then 1 else 0 end as peripheral_vascular,
+
+	case when substr(main_sick,1,4) in ('k254','k255','k256','k257','k264','k265','k266','k267','k274','k275','k276','k277', 'k284','k285','k286','k287') then 1
+		 when substr(sub_sick,1,4) in ('k254','k255','k256','k257','k264','k265','k266','k267','k274','k275','k276','k277', 'k284','k285','k286','k287') then 1 else 0 end as peptic_ulcer,
+
+	case when substr(main_sick,1,3) in ('m05','m32','m34') then 1 
+		when substr(main_sick,1,4) in ('M060','M332','M315','M353') then 1
+		when substr(sub_sick,1,3) in ('m05','m32','m34') then 1
+		when substr(main_sick,1,4) in ('M060','M332','M315','M353') then 1 else 0 end as rheumatologic,
+
+	case when substr(main_sick,1,3) ='N18' then 1
+ 			when substr(sub_sick,1,3) ='N18' then 1 else 0 end as renal_disease
+
+from raw.nhis_heals_gy20_t1;
+
+quit;
+
+
+
